@@ -1,0 +1,217 @@
+public with sharing class WeatherController {
+        private static final String GEONAMES_USERNAME = 'mostafaagourri'; 
+        
+        // Weather Data class
+        public class WeatherData {
+            @AuraEnabled public Decimal temperature { get; set; }
+            @AuraEnabled public Decimal windSpeed { get; set; }
+            @AuraEnabled public Decimal humidity { get; set; }
+            @AuraEnabled public String clouds { get; set; }
+        }
+    
+        // City Data class (city details)
+        public class CityData {
+            @AuraEnabled public String name { get; set; }
+            @AuraEnabled public String country { get; set; }
+            @AuraEnabled public Decimal lat { get; set; }
+            @AuraEnabled public Decimal lng { get; set; }
+        }
+    @AuraEnabled(cacheable=true)
+    ///////methode lat & long 
+public static WeatherData getWeatherByCoordinates(Decimal latitude, Decimal longitude) {
+    try {
+        
+        System.debug('Received Latitude: ' + latitude);
+        System.debug('Received Longitude: ' + longitude);
+        
+        String endpoint = 'https://secure.geonames.org/findNearByWeatherJSON' +
+            '?lat=' + latitude +
+            '&lng=' + longitude +
+            '&username=' + GEONAMES_USERNAME;
+
+        System.debug('Weather API Endpoint: ' + endpoint);
+
+        Http http = new Http();
+        HttpRequest request = new HttpRequest();
+        request.setEndpoint(endpoint);
+        request.setMethod('GET');
+
+        HttpResponse response = http.send(request);
+        System.debug('Weather API Response Status: ' + response.getStatusCode());
+        System.debug('Weather API Response Body: ' + response.getBody());
+
+        if (response.getStatusCode() == 200) {
+            Map<String, Object> responseMap = (Map<String, Object>)JSON.deserializeUntyped(response.getBody());
+            if (responseMap.containsKey('weatherObservation')) {
+                Map<String, Object> weatherObs = (Map<String, Object>)responseMap.get('weatherObservation');
+                WeatherData weather = new WeatherData();
+
+                weather.temperature = tryParseDecimal(weatherObs.get('temperature'));
+                weather.windSpeed = tryParseDecimal(weatherObs.get('windSpeed'));
+                weather.humidity = tryParseDecimal(weatherObs.get('humidity'));
+                weather.clouds = (String)weatherObs.get('clouds');
+
+                System.debug('Weather Data: ' + weather);
+                return weather;
+            }
+        }
+
+        throw new AuraHandledException('Weather data not found.');
+    } catch (Exception e) {
+        System.debug('Error: ' + e.getMessage());
+        throw new AuraHandledException('Error retrieving weather data: ' + e.getMessage());
+    }
+}
+///////// methode city name 
+    @AuraEnabled(cacheable=true)
+   public static WeatherData getWeatherByCityName(String cityName) {
+    WeatherData weather = new WeatherData();
+    
+    try {
+        String cityEndpoint = 'http://api.geonames.org/searchJSON?q=' + EncodingUtil.urlEncode(cityName, 'UTF-8') + '&maxRows=1&username=' + GEONAMES_USERNAME;
+        
+        HttpRequest cityRequest = new HttpRequest();
+        cityRequest.setEndpoint(cityEndpoint);
+        cityRequest.setMethod('GET');
+        
+        Http http = new Http();
+        HttpResponse cityResponse = http.send(cityRequest);
+        
+        if (cityResponse.getStatusCode() == 200) {
+            Map<String, Object> cityResponseMap = (Map<String, Object>)JSON.deserializeUntyped(cityResponse.getBody());
+            
+            if (cityResponseMap.containsKey('geonames')) {
+                List<Object> geonames = (List<Object>)cityResponseMap.get('geonames');
+                
+                if (!geonames.isEmpty()) {
+                    Map<String, Object> city = (Map<String, Object>)geonames[0];
+                    
+                    // Convert string coordinates to decimal using tryParseDecimal
+                    Decimal latitude = tryParseDecimal(city.get('lat'));
+                    Decimal longitude = tryParseDecimal(city.get('lng'));
+                    
+                    if (latitude != null && longitude != null) {
+                        // Get weather using coordinates
+                        return getWeatherByCoordinates(latitude, longitude);
+                    } else {
+                        throw new AuraHandledException('Invalid coordinates for the city.');
+                    }
+                } else {
+                    throw new AuraHandledException('City not found.');
+                }
+            }
+        }
+        throw new AuraHandledException('Error retrieving city data.');
+        
+    } catch (Exception e) {
+        System.debug('Error: ' + e.getMessage());
+        throw new AuraHandledException('Error: ' + e.getMessage());
+    }
+}
+    private static Decimal tryParseDecimal(Object value) {
+        try {
+            if (value != null) {
+                String valueAsString = String.valueOf(value).trim();
+                
+                if (String.isNotBlank(valueAsString)) {
+                    return Decimal.valueOf(valueAsString);
+                } else {
+                    return null;  // Return null if value is empty or blank
+                }
+            }
+        } catch (Exception e) {
+            System.debug('Error parsing value to Decimal: ' + e.getMessage());
+        }
+        return null;  // Return null if parsing fails
+    }
+    
+    ///////////////////// hade  la partie kina f js kidkhol la methode  mais data makijibhach kimchi nichan catch
+      @AuraEnabled
+    public static void sendWeatherReportToOrgUsers(String weatherReport) {
+        try {
+            List<String> userEmails = new List<String>();
+            for(User u : [SELECT Email FROM User WHERE IsActive = true AND Email != null]) {
+                if(!u.Email.containsIgnoreCase('noreply') && 
+                   !u.Email.containsIgnoreCase('job@') && 
+                   !u.Email.containsIgnoreCase('jonapplication@')) {
+                    userEmails.add(u.Email);
+                }
+            }
+            
+            System.debug('Valid User Emails: ' + userEmails);
+            
+            if(userEmails.isEmpty()) {
+                throw new AuraHandledException('No valid email recipients found.');
+            }
+
+            Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+            mail.setToAddresses(userEmails);
+            mail.setSubject('Organization Weather Report');
+            mail.setHtmlBody(weatherReport);
+            
+            Messaging.SendEmailResult[] results = Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{mail});
+            
+            for(Messaging.SendEmailResult result : results) {
+                if (!result.isSuccess()) {
+                    System.debug('Email Error: ' + result.getErrors()[0].getMessage());
+                }
+            }
+            
+        } catch(Exception e) {
+            System.debug('Error in sendWeatherReportToOrgUsers: ' + e.getMessage());
+            throw new AuraHandledException(e.getMessage());
+        }
+    }
+    @AuraEnabled
+
+     public static void sendWeatherReport(String weatherReport, Id accountId) {
+         system.debug('tetetetetetet');
+        try {
+            // Fetch Account-related contacts
+            List<Contact> contacts = [SELECT Email FROM Contact WHERE AccountId = :accountId AND Email != NULL];
+            system.debug('emailscontacts'+contacts);
+            if (contacts.isEmpty()) {
+                throw new AuraHandledException('No contacts with email found for the Account.');
+            }
+
+            // Prepare email
+            List<Messaging.SingleEmailMessage> emailMessages = new List<Messaging.SingleEmailMessage>();
+            for (Contact contact : contacts) {
+                Messaging.SingleEmailMessage email = new Messaging.SingleEmailMessage();
+                email.setToAddresses(new List<String>{contact.Email});
+                email.setSubject('Weather Report');
+                email.setPlainTextBody(weatherReport);
+                emailMessages.add(email);
+            }
+            Messaging.sendEmail(emailMessages);
+            system.debug('testemails'+emailMessages);
+
+            // Update Last_Weather_Report_Sent__c field
+            if (accountId != null) {
+                Account account = [SELECT Id, Last_Weather_Report__c FROM Account WHERE Id = :accountId LIMIT 1];
+                account.Last_Weather_Report__c = DateTime.now();
+                update account;
+            }
+        } catch (Exception ex) {
+            throw new AuraHandledException('Error sending report: ' + ex.getMessage());
+        }
+    }
+
+ /*private static void sendEmailReport(List<String> toAddresses, String weatherReport, String subject) {
+    if (toAddresses.isEmpty()) {
+        throw new AuraHandledException('No email recipients found.');
+    }
+
+    Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+    mail.setToAddresses(toAddresses);
+    mail.setSubject(subject);
+    mail.setHtmlBody(weatherReport);
+    
+    try {
+        Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{mail});
+    } catch (Exception e) {
+        throw new AuraHandledException('Error sending email: ' + e.getMessage());
+    }
+}*/
+
+    }
